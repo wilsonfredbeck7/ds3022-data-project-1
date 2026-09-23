@@ -1,0 +1,7 @@
+venv/
+.venv/
+emissions.duckdb
+*.log
+__pycache__/
+*.pyc
+.DS_Store

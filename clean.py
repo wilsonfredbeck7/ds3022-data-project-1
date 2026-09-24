@@ -1,70 +1,69 @@
-import duckdb
 import logging
+import duckdb
 
 logging.basicConfig(
-    level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s',
-    filename='clean.log'
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    handlers=[logging.FileHandler("clean.log"), logging.StreamHandler()],
 )
 logger = logging.getLogger(__name__)
 
+DB_PATH = "emissions.duckdb"
+TABLES = ("yellow_trips", "green_trips")
+
+
+def remove_duplicates(con, table):
+    con.execute(f"""
+        CREATE TABLE {table}_clean AS
+        SELECT DISTINCT * FROM {table};
+        DROP TABLE {table};
+        ALTER TABLE {table}_clean RENAME TO {table};
+    """)
+    n = con.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+    print(f"{table} — after remove duplicates: {n}")
+    logger.info(f"{table}: removed duplicates, row count now {n}")
+
+
+def remove_where(con, table, label, condition):
+    """Delete rows matching condition, then verify the condition no longer exists."""
+    before = con.execute(f"SELECT COUNT(*) FROM {table} WHERE {condition}").fetchone()[0]
+    print(f"Before delete: {before}")
+
+    con.execute(f"DELETE FROM {table} WHERE {condition}")
+
+    after = con.execute(f"SELECT COUNT(*) FROM {table} WHERE {condition}").fetchone()[0]
+    print(f"After delete (verify): {after}")
+
+    logger.info(f"{table} — {label}: before={before}, after={after}")
+
+
 def clean_trips():
-
     con = None
-
     try:
-        con = duckdb.connect(database='emissions.duckdb', read_only=False)
+        con = duckdb.connect(database=DB_PATH, read_only=False)
         logger.info("Connected to DuckDB instance")
 
-        for table in ("yellow_trips", "green_trips"):
+        for table in TABLES:
+            raw_count = con.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+            logger.info(f"{table}: raw row count {raw_count}")
 
-            con.execute(f"""
-                CREATE TABLE {table}_clean AS
-                SELECT DISTINCT * FROM {table};
-            """)
-            con.execute(f"DROP TABLE {table};")
-            con.execute(f"ALTER TABLE {table}_clean RENAME TO {table};")
-            logger.info(f"{table}: removed duplicate trips")
-
-            before = con.execute(f"SELECT COUNT(*) FROM {table} WHERE passenger_count = 0").fetchone()[0]
-            con.execute(f"DELETE FROM {table} WHERE passenger_count = 0;")
-            after = con.execute(f"SELECT COUNT(*) FROM {table} WHERE passenger_count = 0").fetchone()[0]
-            logger.info(f"{table}: 0-passenger trips before={before}, after={after}")
-
-            before = con.execute(f"SELECT COUNT(*) FROM {table} WHERE trip_distance = 0").fetchone()[0]
-            con.execute(f"DELETE FROM {table} WHERE trip_distance = 0;")
-            after = con.execute(f"SELECT COUNT(*) FROM {table} WHERE trip_distance = 0").fetchone()[0]
-            logger.info(f"{table}: 0-mile trips before={before}, after={after}")
-
-            before = con.execute(f"SELECT COUNT(*) FROM {table} WHERE trip_distance > 100").fetchone()[0]
-            con.execute(f"DELETE FROM {table} WHERE trip_distance > 100;")
-            after = con.execute(f"SELECT COUNT(*) FROM {table} WHERE trip_distance > 100").fetchone()[0]
-            logger.info(f"{table}: over-100-mile trips before={before}, after={after}")
-
-            before = con.execute(f"""
-                SELECT COUNT(*) FROM {table}
-                WHERE date_diff('second', pickup_time, dropoff_time) > 86400
-            """).fetchone()[0]
-            con.execute(f"""
-                DELETE FROM {table}
-                WHERE date_diff('second', pickup_time, dropoff_time) > 86400;
-            """)
-            after = con.execute(f"""
-                SELECT COUNT(*) FROM {table}
-                WHERE date_diff('second', pickup_time, dropoff_time) > 86400
-            """).fetchone()[0]
-            logger.info(f"{table}: over-1-day trips before={before}, after={after}")
+            remove_duplicates(con, table)
+            remove_where(con, table, "0-passenger trips", "passenger_count = 0")
+            remove_where(con, table, "0-mile trips", "trip_distance = 0")
+            remove_where(con, table, "trips > 100 miles", "trip_distance > 100")
+            remove_where(con, table, "trips > 1 day",
+                         "date_diff('second', pickup_time, dropoff_time) > 86400")
 
             final_count = con.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
             logger.info(f"{table}: final row count after cleaning = {final_count}")
-            print(f"{table}: final row count after cleaning = {final_count}")
 
     except Exception as e:
-        print(f"An error occurred: {e}")
         logger.error(f"An error occurred: {e}")
-
+        raise
     finally:
         if con:
             con.close()
+
 
 if __name__ == "__main__":
     clean_trips()

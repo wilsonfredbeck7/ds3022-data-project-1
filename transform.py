@@ -30,6 +30,8 @@ def add_columns(con, table):
 
 
 def set_trip_co2(con, table):
+    """Set trip_co2_kgs = distance x co2_grams_per_mile / 1000, looking the rate up
+    in vehicle_emissions at run time instead of hard-coding it."""
     vehicle_type = VEHICLE_TYPE[table]
     con.execute(f"""
         UPDATE {table} SET trip_co2_kgs = (
@@ -42,6 +44,8 @@ def set_trip_co2(con, table):
 
 
 def set_avg_mph(con, table):
+    """Set avg_mph = distance / duration in hours. NULLIF avoids dividing by zero
+    on trips with a 0-second duration."""
     con.execute(f"""
         UPDATE {table}
         SET avg_mph = trip_distance /
@@ -51,6 +55,7 @@ def set_avg_mph(con, table):
 
 
 def set_date_parts(con, table):
+    """Extract hour, day of week (0=Sunday), week and month from pickup_time."""
     con.execute(f"""
         UPDATE {table} SET
             hour_of_day   = date_part('hour', pickup_time),
@@ -62,6 +67,7 @@ def set_date_parts(con, table):
 
 
 def transform_trips():
+    """Add and populate the six calculated columns on each trip table."""
     con = None
     try:
         con = duckdb.connect(database=DB_PATH, read_only=False)

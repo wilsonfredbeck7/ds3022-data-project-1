@@ -13,8 +13,9 @@ TABLES = ("yellow_trips", "green_trips")
 
 
 def remove_duplicates(con, table):
+    """Rebuild the table from SELECT DISTINCT so exact duplicate trips are removed."""
     con.execute(f"""
-        CREATE TABLE {table}_clean AS
+        CREATE OR REPLACE TABLE {table}_clean AS
         SELECT DISTINCT * FROM {table};
         DROP TABLE {table};
         ALTER TABLE {table}_clean RENAME TO {table};
@@ -38,6 +39,7 @@ def remove_where(con, table, label, condition):
 
 
 def clean_trips():
+    """Apply all five cleaning rules to each trip table and log the final row counts."""
     con = None
     try:
         con = duckdb.connect(database=DB_PATH, read_only=False)

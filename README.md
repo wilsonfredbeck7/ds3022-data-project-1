@@ -1,118 +1,60 @@
-# DS3022 - Data Project 1 (Fall 2025)
+# DS 3022 Data Project 1: NYC Taxi CO2 Pipeline
 
-## Assignment
+Wilson Fredbeck — DS 3022, Fall 2026
 
-<img src="https://s3.amazonaws.com/uvasds-systems/images/nyc-taxi-graphic.png" style="align:right;float:right;max-width:50%;">
+This pipeline loads every 2024 YELLOW and GREEN NYC taxi trip into a local DuckDB database. It cleans out invalid trips, calculates CO2 output and time features for each trip, and reports when taxis are most and least carbon-heavy.
 
-This project demonstrates basic data engineering and data science skills. Using the freely available
-NYC Trip Record data you will calculate CO2 output for rides within 2024 and perform some basic statistical
-analysis based on transformations you add to these data.
+## How to run
 
-Use the structure of this repository to submit your work. Complete the Python scripts as indicated below,
-and add DBT model files within the appropriate subfolder.
-
-Begin by forking this repository into your own account within GitHub. You will push change back to your own fork:
-
-[**FORK THIS REPO >>**](https://github.com/uvasds-systems/ds3022-data-project-1/fork)
-
-## Data
-
-The data for this assignment are available from the NYC Taxi Commission Trip Record Data page:
-**https://www.nyc.gov/site/tlc/about/tlc-trip-record-data.page**
-
-You will be working with ALL data for 2024 for both YELLOW and GREEN taxis. Each month is available as a Parquet file for each taxi type.
-
-There is also a small `data/vehicle_emissions.csv` file in this repository that will provide a reference when calculating CO2 output based on distance (in miles) and `co2_grams_per_mile`.
-
-Assemble all trip data (Yellow and Green) into one or two DuckDB tables in a local DuckDB database. Given the full requirements of this project you should determine how to structure your data.
-
-Complete the `load.py` script to create a local, persistent DuckDB database that creates and loads (at most) three tables:
-
-1. A full table of YELLOW taxi trips for all of 2024.
-2. A full table of GREEN taxi trips for all of 2024.
-3. A lookup table of `vehicle_emissions` based on the included CSV file above.
-
-Your `load.py` script should also output raw row counts for each of these tables, before cleaning. Recall that once a table exists (perhaps with a  `CREATE TABLE` query defining columns and data types), subsequent DuckDB commands like this will continue to load the same table:
-
-```
--- Insert data from the 8th file
-INSERT INTO my_table
-SELECT * FROM read_parquet('file8.parquet');
-
--- Insert data from the 9th file
-INSERT INTO my_table
-SELECT * FROM read_parquet('file9.parquet');
+```bash
+python -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+python run.py
 ```
 
-**NOTE:** Given the redundancy of the examples above (nearly identical lines for each Parquet file) inserting multiple data sources into a single table should make use of **programmatic** means of iterating through the various sources, instead of **statically** coding individual INSERT statements, each for a separate data source.
+`run.py` runs the four stages in order and stops at the first failure. It works from any folder. Each stage can also be run on its own, from inside the project folder:
 
-**NOTE:** Ask yourself: Do I need all columns for tables being imported?
+| Stage | Script | What it does | Log |
+|---|---|---|---|
+| Load | `load.py` | Builds `vehicle_emissions` (8 rows) from `data/vehicle_emissions.csv`. Loads all 24 monthly Parquet files (12 yellow + 12 green) directly from the NYC TLC URLs into `yellow_trips` and `green_trips`. Prints raw row counts and descriptive statistics. | `load.log` |
+| Clean | `clean.py` | Removes duplicates, 0-passenger trips, 0-mile trips, trips over 100 miles and trips over 1 day (86,400 s). Runs a verification count after every delete to show the condition is now 0. | `clean.log` |
+| Transform | `transform.py` | Adds `trip_co2_kgs`, `avg_mph`, `hour_of_day`, `day_of_week`, `week_of_year` and `month_of_year`. | `transform.log` |
+| Analyze | `analysis.py` | Reports the largest CO2 trip and the heaviest/lightest hour, day, week and month for each cab type. Saves `co2_by_month.png`. | `analysis.log` |
 
-## Clean
+A full run from an empty database takes about 1.5 minutes. Most of that is downloading the yellow taxi files.
 
-Trips should be cleaned and checked for the following conditions (whether or not they exist):
+## Design decisions
 
-1. Remove any duplicate trips.
-2. Remove any trips with `0` passengers.
-3. Remove any trips 0 miles in length.
-4. Remove any trips longer than 100 miles in length.
-5. Remove any trips lasting more than 1 day in length (86400 seconds).
+- **Only four columns are loaded.** The trip files have 20 columns, but the cleaning rules and transformations only use pickup time, dropoff time, passenger count and trip distance. Skipping the other 16 keeps the database smaller and the load faster.
+- **Shared column names.** Yellow uses `tpep_pickup_datetime` and green uses `lpep_pickup_datetime`. Both are renamed to `pickup_time` / `dropoff_time` during the load, so `clean.py`, `transform.py` and `analysis.py` treat both tables the same way. They just loop over `("yellow_trips", "green_trips")`.
+- **Files are loaded with a loop.** `load.py` builds each file's URL from the color and month and runs one `INSERT` per file inside a loop, rather than 24 hard-coded statements.
+- **Two trip tables, not one.** Keeping yellow and green separate makes it clear which emissions rate applies. Every analysis question is also asked per cab type.
+- **CO2 is looked up, not hard-coded.** `trip_co2_kgs` is calculated with a subquery against `vehicle_emissions` (`yellow_taxi` = 380 g/mi, `green_taxi` = 350 g/mi). If the CSV changes, the numbers follow.
+- **Divide-by-zero guard.** `avg_mph` uses `NULLIF(duration, 0)`, so a trip with a 0-second duration gets `NULL` instead of an error.
+- **Clean rules applied as written.** Only the five required rules are applied. Some odd rows remain. About 3.8M yellow trips have a `NULL` passenger count, but they still have valid distances and times, so they stay in the CO2 results. There are also about 70 trips with pickups outside 2024, too few to change any average.
+- **Log-scale plot.** Yellow taxis produce about 80× more CO2 per month than green taxis, so the plot uses a log y-axis. Otherwise the green line would sit flat at zero.
 
-Complete the `clean.py` script to perform these steps and include code that checks/verifies that these conditions no longer exist in your trip table(s) within your DuckDB database. See [this reference](https://github.com/uvasds-systems/data-engineering-essentials/blob/main/synthetic/clean-data-answers.py) for examples.
+## Results
 
+Row counts:
 
-## Transform
+| | Raw | After cleaning |
+|---|---|---|
+| yellow_trips | 41,169,720 | 39,436,749 |
+| green_trips | 660,218 | 617,806 |
+| vehicle_emissions | 8 | — |
 
-After cleaning you should have 1 or 2 cleaned trip tables representing YELLOW and GREEN trips for all of 2024. Perform the following transformations to the data:
+Analysis (averages are CO2 per trip):
 
-1. Calculate total CO2 output per trip by multiplying the `trip_distance` by the `co2_grams_per_mile` value in the `vehicle_emissions` lookup table, then dividing by 1000 (to calculate Kg). Insert that value as a new column named `trip_co2_kgs`. This calculation should be based upon a real-time lookup from the `vehicle_emissions` table and not hard-coded as a numeric figure.
-2. Calculate average miles per hour based on distance divided by the duration of the trip, and insert that value as a new column `avg_mph`.
-3. Extract the HOUR of the day from the `pickup_time` and insert it as a new column `hour_of_day`.
-4. Extract the DAY OF WEEK from the pickup time and insert it as a new column `day_of_week`.
-5. Extract the WEEK NUMBER from the pickup time and insert it as a new column `week_of_year`.
-6. Extract the MONTH from the pickup time and insert it as a new column `month_of_year`.
+| Question | Yellow | Green |
+|---|---|---|
+| Largest single CO2 trip | 37.95 kg (99.86 mi, 2024-10-27) | 34.75 kg (99.28 mi, 2024-02-28) |
+| Heaviest / lightest hour | 05:00 / 18:00 | 05:00 / 18:00 |
+| Heaviest / lightest day | Sunday / Saturday | Sunday / Tuesday |
+| Heaviest / lightest week | week 35 / week 51 | week 35 / week 3 |
+| Heaviest / lightest month | August / February | August / January |
 
+The heaviest hour is 5 AM because early-morning trips tend to be long (likely airport runs). The lightest is 6 PM, when rush-hour trips are short. Week 35 (late August, the end of summer travel) is the heaviest week for both cab types.
 
-Complete the `transform.py` script to perform these steps using python-based DuckDB commands. For SQL reference see [this page](https://github.com/uvasds-systems/data-engineering-essentials/tree/main/transform) from earlier in the semester.
-
-For an additional 6 points, perform these steps using models in DBT. Save these files to `dbt/models/`.
-
-## Analyze
-
-Complete the `analysis.py` script to report the following calculations using DuckDB/SQL. You should give one answer for each cab type, YELLOW and GREEN:
-
-1. What was the single largest carbon producing trip of the year for YELLOW and GREEN trips? (One result for each type)
-2. Across the entire year, what on average are the most carbon heavy and carbon light hours of the day for YELLOW and for GREEN trips? (1-24)
-3. Across the entire year, what on average are the most carbon heavy and carbon light days of the week for YELLOW and for GREEN trips? (Sun-Sat)
-4. Across the entire year, what on average are the most carbon heavy and carbon light weeks of the year for YELLOW and for GREEN trips? (1-52)
-5. Across the entire year, what on average are the most carbon heavy and carbon light months of the year for YELLOW and for GREEN trips? (Jan-Dec)
-6. Use a plotting library of your choice (`matplotlib`, `seaborn`, etc.) to generate a time-series plot or histogram with MONTH
-along the X-axis and CO2 totals along the Y-axis. Render two lines/bars/plots of data, one each for YELLOW and GREEN taxi trip CO2 totals.
-
-Your script should give text outputs for each calculation WITH a label explaining the value. The plot should be output as a PNG/JPG/GIF image 
-committed within your project.
-
-
-## General Expectations, Notes & Comments
-
-- Your repository URL must be a fork of this repository.
-- All code should execute without significant errors. Minor warnings or notifications (version changes, deprecation warnings, etc.) are acceptable.
-- All code must be in Python, SQL, and YAML. No bash scripts or other languages will be accepted.
-- Code quality matters. Scripts should always use error handling, logging, clearly defined functions, and `__name__ == __main__` default handlers.
-- Date/Time extractions are made simple with DuckDB. See [DuckDB Date Functions](https://duckdb.org/docs/stable/sql/functions/date.html) and [DuckDB Date Part Functions](https://duckdb.org/docs/stable/sql/functions/datepart.html).
-- All SQL queries for this project are easily within the grasp of students. Make use of distributed reference materials.
-- Log segments of your functions appropriately, and be sure to log exceptions and their output. Each functional stage of this project (load, clean, transform, analyze) should have its own separate log file. See [this reference](https://realpython.com/python-logging/).
-- You **MUST** use the naming conventions given in this assignment (`load.py`, `clean.py`, `transform.py`, `analysis.py`) as they will be invoked by grading tools. If using DBT please indicate that in the `transform.py` file as a comment.
-
-## Grading / Rubric
-
-Add, commit, and push your work and submit the URL to your repository for grading. You should NOT commit any Parquet files, logs, or local database files to your repository.
-
-You will be graded according to the rubric distributed with this assignment. Partial credit will be given, and you may choose to complete only some of the requirements.
-
-**For an additional 5 points** expand your entire codebase to cover the time period 2015-2024. All data is available in the NYC Taxi Trip Data site. Perform the same loading, cleaning, and transformations. Report comprehensive analysis figures for the entire range of 2015-2024 instead of only 2024. Likewise the generated plot should represent this entire date range.
-
-## Submission
-
-Use the rubric to track your work and scope of tasks. Edit the PDF version of the rubric using Adobe Acrobat Reader, indicating
-what tasks you attempted and those you did not. Save that revised PDF and submit as part of the Canvas assignment.
+![CO2 by month](co2_by_month.png)
